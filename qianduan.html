@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AOC 安全绩效管理系统 - 管理员版</title>
+
+    <!-- 1. 引入 Tailwind CSS -->
+    <link rel="stylesheet" href="https://cdn.staticfile.org/tailwindcss/2.2.19/tailwind.min.css">
+
+    <!-- 2. 引入 Chart.js -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+
+    <!-- 3. 引入 Vue 3 -->
+    <script src="https://cdn.staticfile.org/vue/3.2.47/vue.global.prod.min.js"></script>
+
+    <!-- 4. 引入 Firebase (已补充 collection, getDocs, deleteDoc) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        // 👇 关键更新：引入了集合操作和删除操作所需的函数
+        import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        window.firebaseInit = initializeApp;
+        window.firebaseAuth = { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged };
+        // 👇 关键更新：将新函数挂载到 window 对象
+        window.firebaseDb = { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc };
+    </script>
+
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; }
+        [v-cloak] { display: none; }
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+    </style>
+</head>
+<body>
+
+    <div id="app" v-cloak class="min-h-screen flex flex-col">
+        
+        <!-- 顶部导航栏 -->
+        <header v-if="currentUser" class="bg-white shadow-sm p-4 flex justify-between items-center sticky top-0 z-50">
+            <div class="flex items-center gap-3">
+                <div :class="currentUser.role === 'admin' ? 'bg-purple-600' : 'bg-blue-600'" class="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shadow-md">
+                    {{ currentUser.department?.charAt(0) || 'A' }}
+                </div>
+                <div>
+                    <h2 class="font-bold text-gray-800 flex items-center gap-2">
+                        {{ currentUser.username }}
+                        <span v-if="currentUser.role === 'admin'" class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full border border-purple-200">管理员</span>
+                    </h2>
+                    <p class="text-xs text-gray-500">{{ currentUser.department }} | 工号：{{ currentUser.employeeId }}</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <span class="text-gray-600 font-mono text-sm hidden sm:block">{{ currentTime }}</span>
+                <button @click="handleLogout" class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 transition text-sm shadow-sm">
+                    退出登录
+                </button>
+            </div>
+        </header>
+
+        <!-- 主内容区域 -->
+        <main class="flex-grow flex items-center justify-center p-4">
+            
+            <!-- 1. 登录界面 -->
+            <div v-if="currentPage === 'login'" class="bg-white p-8 rounded-lg shadow-xl w-full max-w-md animate-fade-in">
+                <div class="text-center mb-6">
+                    <div class="w-12 h-12 bg-blue-600 rounded-lg mx-auto flex items-center justify-center text-white text-xl font-bold mb-2">AOC</div>
+                    <h2 class="text-2xl font-bold text-gray-800">安全系统登录</h2>
+                    <p class="text-gray-500 text-sm mt-1">请输入企业邮箱和密码</p>
+                </div>
+                <form @submit.prevent="handleLogin" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">邮箱 / 用户名</label>
+                        <input v-model="loginForm.username" type="text" required 
+                            class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 transition"
+                            placeholder="name@aoc.local">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">密码</label>
+                        <input v-model="loginForm.password" type="password" required 
+                            class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 transition"
+                            placeholder="••••••••">
+                    </div>
+                    <button type="submit" :disabled="loading" 
+                        class="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition">
+                        {{ loading ? '验证中...' : '立即登录' }}
+                    </button>
+                </form>
+                <div class="mt-6 text-center border-t pt-4">
+                    <a @click="currentPage = 'register'" class="text-sm text-blue-600 hover:text-blue-500 cursor-pointer font-medium">
+                        没有账号？点击注册新员工
+                    </a>
+                </div>
+            </div>
+
+            <!-- 2. 注册界面 -->
+            <div v-if="currentPage === 'register'" class="bg-white p-8 rounded-lg shadow-xl w-full max-w-md">
+                <h2 class="text-2xl font-bold text-center text-gray-800 mb-6">新员工注册</h2>
+                <form @submit.prevent="handleRegister" class="space-y-3">
+                    <div class="grid grid-cols-2 gap-3">
+                        <input v-model="registerForm.username" type="text" required placeholder="姓名" class="px-3 py-2 border rounded focus:ring-2 focus:ring-green-500 outline-none">
+                        <input v-model="registerForm.employeeId" type="text" required placeholder="工号" class="px-3 py-2 border rounded focus:ring-2 focus:ring-green-500 outline-none">
+                    </div>
+                    <input v-model="registerForm.email" type="email" required placeholder="企业邮箱 (@aoc.local)" class="px-3 py-2 border rounded w-full focus:ring-2 focus:ring-green-500 outline-none">
+                    
+                    <select v-model="registerForm.department" class="px-3 py-2 border rounded w-full bg-white focus:ring-2 focus:ring-green-500 outline-none">
+                        <option value="签派放行">签派放行</option>
+                        <option value="情报服务">情报服务</option>
+                        <option value="性能分析">性能分析</option>
+                        <option value="航务管理">航务管理</option>
+                    </select>
+
+                    <input v-model="registerForm.password" type="password" required placeholder="设置密码" class="px-3 py-2 border rounded w-full focus:ring-2 focus:ring-green-500 outline-none">
+                    <input v-model="registerForm.confirmPassword" type="password" required placeholder="确认密码" class="px-3 py-2 border rounded w-full focus:ring-2 focus:ring-green-500 outline-none">
+
+                    <button type="submit" :disabled="loading" 
+                        class="w-full py-2.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 font-medium transition shadow-sm">
+                        {{ loading ? '注册中...' : '提交注册' }}
+                    </button>
+                </form>
+                <div class="mt-4 text-center">
+                    <a @click="currentPage = 'login'" class="text-sm text-gray-600 hover:text-gray-800 cursor-pointer">
+                        返回登录
+                    </a>
+                </div>
+            </div>
+
+            <!-- 3. 员工首页 -->
+            <div v-if="currentPage === 'employee_home'" class="w-full max-w-5xl bg-white p-6 rounded-lg shadow-lg animate-fade-in">
+                <div class="flex justify-between items-center mb-6 border-b pb-4">
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-800">📊 安全绩效仪表盘</h2>
+                        <p class="text-sm text-gray-500 mt-1">部门：{{ currentUser.department }}</p>
+                    </div>
+                    <span class="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">数据实时更新</span>
+                </div>
+                
+                <div class="relative h-80 w-full mb-8">
+                    <canvas id="performanceChart"></canvas>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="p-5 bg-blue-50 rounded-lg border border-blue-100 shadow-sm">
+                        <h3 class="text-blue-800 font-semibold text-sm uppercase tracking-wide">待办事项</h3>
+                        <p class="text-3xl font-bold text-blue-600 mt-2">3</p>
+                        <p class="text-xs text-blue-400 mt-1">需在 24h 内处理</p>
+                    </div>
+                    <div class="p-5 bg-green-50 rounded-lg border border-green-100 shadow-sm">
+                        <h3 class="text-green-800 font-semibold text-sm uppercase tracking-wide">本月安全评分</h3>
+                        <p class="text-3xl font-bold text-green-600 mt-2">92.5</p>
+                        <p class="text-xs text-green-400 mt-1">较上月 +1.2</p>
+                    </div>
+                    <div class="p-5 bg-purple-50 rounded-lg border border-purple-100 shadow-sm">
+                        <h3 class="text-purple-800 font-semibold text-sm uppercase tracking-wide">培训进度</h3>
+                        <p class="text-3xl font-bold text-purple-600 mt-2">80%</p>
+                        <p class="text-xs text-purple-400 mt-1">剩余 2 门课程</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 4. 管理员首页 (功能增强版) -->
+            <div v-if="currentPage === 'admin_home'" class="w-full max-w-5xl bg-white p-6 rounded-lg shadow-lg animate-fade-in">
+                <div class="flex justify-between items-center mb-6 border-b pb-4">
+                    <div>
+                        <h2 class="text-2xl font-bold text-gray-800">👑 管理员控制台</h2>
+                        <p class="text-gray-500 text-sm mt-1">管理系统用户与数据安全</p>
+                    </div>
+                    <span class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-bold border border-purple-200">SUPER ADMIN</span>
+                </div>
+                
+                <!-- 功能操作区 -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    <!-- 卡片 1: 用户管理 -->
+                    <div class="border rounded-xl p-5 hover:shadow-lg transition duration-300 bg-gradient-to-br from-white to-blue-50">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="p-2 bg-blue-100 rounded-lg text-blue-600">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                            </div>
+                            <h3 class="font-bold text-lg text-gray-800">用户列表管理</h3>
+                        </div>
+                        <p class="text-sm text-gray-600 mb-4 h-10">查看系统内所有注册用户，监控角色分配情况，支持单个删除。</p>
+                        <button @click="loadUsers" :disabled="loading" class="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition flex justify-center items-center gap-2">
+                            <span v-if="loading">加载中...</span>
+                            <span v-else>🔄 刷新用户列表</span>
+                        </button>
+                    </div>
+
+                    <!-- 卡片 2: 数据维护 -->
+                    <div class="border rounded-xl p-5 hover:shadow-lg transition duration-300 bg-gradient-to-br from-white to-red-50">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="p-2 bg-red-100 rounded-lg text-red-600">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            </div>
+                            <h3 class="font-bold text-lg text-gray-800">数据清理</h3>
+                        </div>
+                        <p class="text-sm text-gray-600 mb-4 h-10">⚠️ 危险操作：一键删除数据库中所有测试产生的用户数据。</p>
+                        <button @click="deleteAllUsers" :disabled="loading" class="w-full bg-red-500 text-white py-2 rounded-lg hover:bg-red-600 transition flex justify-center items-center gap-2">
+                            <span v-if="loading">处理中...</span>
+                            <span v-else>🗑️ 清空所有测试用户</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 用户列表表格 (动态显示) -->
+                <div v-if="usersList.length > 0" class="mt-8 border rounded-lg overflow-hidden shadow-sm">
+                    <div class="bg-gray-50 px-6 py-3 border-b flex justify-between items-center">
+                        <h3 class="font-bold text-gray-700">注册用户详情 (共 {{ usersList.length }} 人)</h3>
+                        <span class="text-xs text-gray-500">最后更新：{{ currentTime }}</span>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">姓名 / 工号</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">部门</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">角色</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">邮箱</th>
+                                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                                <tr v-for="user in usersList" :key="user.uid" class="hover:bg-gray-50 transition">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-medium text-gray-900">{{ user.username }}</div>
+                                        <div class="text-xs text-gray-500">{{ user.employeeId }}</div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
+                                            {{ user.department }}
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span :class="user.role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'" class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full">
+                                            {{ user.role }}
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {{ user.email }}
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                        <button @click="deleteSingleUser(user.uid, user.username)" class="text-red-600 hover:text-red-900 hover:underline">
+                                            删除
+                                        </button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <div v-else-if="usersListLoaded" class="text-center py-10 text-gray-500">
+                    暂无用户数据或列表为空。
+                </div>
+            </div>
+
+        </main>
+        
+        <footer class="bg-gray-800 text-white text-center p-4 text-sm mt-auto">
+            &copy; 2026 AOC Safety Performance System. All rights reserved.
+        </footer>
+    </div>
+
+    <!-- Vue 逻辑部分 -->
+    <script>
+        const { createApp, ref, reactive, nextTick } = Vue;
+
+        setTimeout(() => {
+            const firebaseConfig = {
+                apiKey: "AIzaSyCLMMMJNImqKFp7d8kDt8ke_oF6jjSXLHw",
+                authDomain: "aoc-safety-performance.firebaseapp.com",
+                projectId: "aoc-safety-performance",
+                storageBucket: "aoc-safety-performance.firebasestorage.app",
+                messagingSenderId: "265179808764",
+                appId: "1:265179808764:web:fb3b5c0e6636eaf9276879",
+                measurementId: "G-QKGC66K7LY"
+            };
+
+            const app = window.firebaseInit(firebaseConfig);
+            const auth = window.firebaseAuth.getAuth(app);
+            const db = window.firebaseDb.getFirestore(app);
+
+            createApp({
+                setup() {
+                    const currentPage = ref('login'); 
+                    const currentTime = ref('');
+                    const currentUser = ref(null);
+                    const loading = ref(false); 
+                    
+                    // 👇 新增：用于存储用户列表和标记是否已加载
+                    const usersList = ref([]);
+                    const usersListLoaded = ref(false);
+
+                    const loginForm = reactive({ username: '', password: '' });
+                    const registerForm = reactive({ 
+                        username: '', email: '', employeeId: '', 
+                        department: '签派放行', password: '', confirmPassword: '' 
+                    });
+
+                    const handleLogin = async () => {
+                        const emailToUse = loginForm.username.includes('@') ? loginForm.username : loginForm.username + "@aoc.local"; 
+                        loading.value = true;
+                        try {
+                            const userCredential = await window.firebaseAuth.signInWithEmailAndPassword(auth, emailToUse, loginForm.password);
+                            const user = userCredential.user;
+                            const userDoc = await window.firebaseDb.getDoc(window.firebaseDb.doc(db, "users", user.uid));
+                            
+                            if (userDoc.exists()) {
+                                currentUser.value = userDoc.data();
+                                currentUser.value.uid = user.uid;
+                                currentPage.value = currentUser.value.role === 'admin' ? 'admin_home' : 'employee_home';
+                                
+                                // 重置列表状态
+                                usersList.value = [];
+                                usersListLoaded.value = false;
+
+                                if (currentPage.value === 'employee_home') nextTick(() => setTimeout(initCharts, 100));
+                            } else {
+                                alert("用户数据不存在");
+                                await window.firebaseAuth.signOut(auth);
+                            }
+                        } catch (error) {
+                            alert("登录失败：" + error.message);
+                        } finally {
+                            loading.value = false;
+                        }
+                    };
+
+                    const handleRegister = async () => {
+                        if (registerForm.password !== registerForm.confirmPassword) { alert('密码不一致'); return; }
+                        loading.value = true;
+                        try {
+                            const userCredential = await window.firebaseAuth.createUserWithEmailAndPassword(auth, registerForm.email, registerForm.password);
+                            const user = userCredential.user;
+                            await window.firebaseDb.setDoc(window.firebaseDb.doc(db, "users", user.uid), {
+                                uid: user.uid, username: registerForm.username, email: registerForm.email,
+                                employeeId: registerForm.employeeId, department: registerForm.department,
+                                role: 'employee', createdAt: new Date()
+                            });
+                            alert('注册成功！请使用新账号登录。');
+                            currentPage.value = 'login';
+                        } catch (error) {
+                            alert("注册失败：" + error.message);
+                        } finally { loading.value = false; }
+                    };
+
+                    const handleLogout = async () => {
+                        await window.firebaseAuth.signOut(auth);
+                        currentUser.value = null;
+                        usersList.value = [];
+                        usersListLoaded.value = false;
+                        currentPage.value = 'login';
+                    };
+
+                    // 👇 新增：加载用户列表功能
+                    const loadUsers = async () => {
+                        if (!currentUser.value || currentUser.value.role !== 'admin') {
+                            alert("权限不足");
+                            return;
+                        }
+                        loading.value = true;
+                        try {
+                            const usersRef = window.firebaseDb.collection(db, "users");
+                            const querySnapshot = await window.firebaseDb.getDocs(usersRef);
+                            
+                            usersList.value = [];
+                            querySnapshot.forEach((doc) => {
+                                usersList.value.push({ uid: doc.id, ...doc.data() });
+                            });
+                            usersListLoaded.value = true;
+                            
+                            if (usersList.value.length === 0) {
+                                alert("当前数据库中没有用户。");
+                            } else {
+                                console.log(`成功加载 ${usersList.value.length} 位用户`);
+                            }
+                        } catch (error) {
+                            console.error("加载失败:", error);
+                            alert("加载用户列表失败，请检查网络连接或控制台错误。\n错误信息：" + error.message);
+                        } finally {
+                            loading.value = false;
+                        }
+                    };
+
+                    // 👇 新增：删除单个用户功能
+                    const deleteSingleUser = async (uid, username) => {
+                        if (!confirm(`确定要删除用户 "${username}" 吗？\n此操作不可恢复。`)) return;
+                        
+                        loading.value = true;
+                        try {
+                            await window.firebaseDb.deleteDoc(window.firebaseDb.doc(db, "users", uid));
+                            // 同时尝试删除 Auth 用户 (可选，如果 Auth 用户过多可能会受限，这里主要删数据库记录)
+                            // 注意：前端直接删除 Auth 用户通常需要重新认证或云函数，这里仅演示删除 Firestore 记录
+                            
+                            alert(`用户 ${username} 已从数据库移除。`);
+                            // 重新加载列表
+                            await loadUsers();
+                        } catch (error) {
+                            alert("删除失败：" + error.message);
+                        } finally {
+                            loading.value = false;
+                        }
+                    };
+
+                    // 👇 新增：清空所有用户功能
+                    const deleteAllUsers = async () => {
+                        if (!confirm("⚠️ 极度危险警告！\n\n这将删除数据库中 ALL 用户记录。\n只有在进行系统重置测试时才使用此功能。\n\n确定要继续吗？")) return;
+                        if (!confirm("再次确认：您确定要清空所有数据吗？")) return;
+
+                        loading.value = true;
+                        try {
+                            const usersRef = window.firebaseDb.collection(db, "users");
+                            const snapshot = await window.firebaseDb.getDocs(usersRef);
+                            
+                            let count = 0;
+                            const batchPromises = [];
+                            
+                            snapshot.forEach(doc => {
+                                batchPromises.push(window.firebaseDb.deleteDoc(window.firebaseDb.doc(db, "users", doc.id)));
+                                count++;
+                            });
+
+                            await Promise.all(batchPromises);
+                            
+                            alert(`成功删除了 ${count} 条用户记录！`);
+                            usersList.value = [];
+                            usersListLoaded.value = false;
+                        } catch (error) {
+                            alert("批量删除失败：" + error.message);
+                        } finally {
+                            loading.value = false;
+                        }
+                    };
+
+                    window.firebaseAuth.onAuthStateChanged(auth, async (user) => {
+                        if (user) {
+                            const userDoc = await window.firebaseDb.getDoc(window.firebaseDb.doc(db, "users", user.uid));
+                            if (userDoc.exists()) {
+                                currentUser.value = userDoc.data();
+                                currentUser.value.uid = user.uid;
+                                if (currentPage.value === 'login' || currentPage.value === 'register') {
+                                    currentPage.value = currentUser.value.role === 'admin' ? 'admin_home' : 'employee_home';
+                                    if (currentPage.value === 'employee_home') nextTick(() => setTimeout(initCharts, 200));
+                                }
+                            }
+                        } else {
+                            currentUser.value = null;
+                            if (currentPage.value !== 'login' && currentPage.value !== 'register') currentPage.value = 'login';
+                        }
+                    });
+
+                    const initCharts = () => {
+                        const ctx = document.getElementById('performanceChart');
+                        if (!ctx) return;
+                        const existingChart = Chart.getChart(ctx);
+                        if (existingChart) existingChart.destroy();
+                        new Chart(ctx, {
+                            type: 'bar',
+                            data: {
+                                labels: ['安全政策', '安全风险', '安全保证', '安全促进', '文件学习', '资质持有', '航行通告', '资料评估', '设备完好', '安全培训', '情报服务', '安全投入'],
+                                datasets: [{ label: '部门得分', data: [45, 65, 60, 70, 44, 65, 70, 70, 65, 72, 60, 72], backgroundColor: '#3b82f6', borderRadius: 6 }]
+                            },
+                            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, max: 100 } } }
+                        });
+                    };
+
+                    const updateTime = () => {
+                        const now = new Date();
+                        currentTime.value = `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}-${now.getDate().toString().padStart(2,'0')} ${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+                    };
+                    setInterval(updateTime, 1000);
+                    updateTime();
+
+                    return { 
+                        currentPage, currentTime, loginForm, registerForm, loading, 
+                        handleLogin, handleRegister, handleLogout, currentUser,
+                        usersList, usersListLoaded, loadUsers, deleteSingleUser, deleteAllUsers
+                    };
+                }
+            }).mount('#app');
+        }, 500);
+    </script>
+</body>
+</html>
